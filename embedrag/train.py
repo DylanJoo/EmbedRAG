@@ -1,61 +1,29 @@
-"""SFT for EmbedRAG (stage 1 alignment / stage 2 task tuning), via HF Trainer.
+"""Train ClaimEmb (claim LoRA + [CLM] step input + stop head) via HF Trainer.
 
-Stage 1 (align):  --train_encoder --train_projector, decoder frozen, data = pretrain (ae/cont)
-Stage 2 (task):   --init_from <stage1> [--decoder_lora --train_decoder] --kd_weight 1, data = mds/qa
+  accelerate launch -m embedrag.train --train_files data/claimemb/eng.train.jsonl \
+      --bf16 --per_device_train_batch_size 32 --learning_rate 1e-4 --output_dir ckpt/claimemb
 """
 import json
 from collections import defaultdict
-from dataclasses import dataclass, field, fields
-from typing import Optional
+from dataclasses import asdict, fields
 
 import torch
-from transformers import HfArgumentParser, Trainer, TrainingArguments
+from transformers import HfArgumentParser, Trainer, TrainerCallback
 
-from .backbone import ChatFormat
-from .data import EmbedRAGCollator
-from .model import EmbedRAG, EmbedRAGConfig
-
-
-@dataclass
-class ModelArgs(EmbedRAGConfig):
-    init_from: Optional[str] = field(default=None, metadata={"help": "EmbedRAG checkpoint to start from"})
-    train_encoder: bool = True
-    train_projector: bool = True
-    train_decoder: bool = False
+from .config import ClaimEmbConfig, DataArgs, ModelArgs, TrainArgs
+from .data import ClaimCollator
+from .model import ClaimEmb
 
 
-@dataclass
-class DataArgs:
-    train_files: str = field(default=None, metadata={"help": "comma-separated unified jsonl files"})
-    eval_files: Optional[str] = None
-    tasks: Optional[str] = field(default=None, metadata={"help": "comma-separated task filter"})
-    max_passage_len: int = 256
-    max_target_len: int = 512
-    passage_prefix: str = ""
-    system_prompt: Optional[str] = None
-    use_chat_template: bool = True
-
-
-@dataclass
-class TrainArgs(TrainingArguments):
-    output_dir: str = "./temp"
-    remove_unused_columns: bool = False
-    report_to: Optional[str] = "none"
-    ce_weight: float = 1.0
-    kd_weight: float = 0.0
-    kd_temperature: float = 1.0
-
-
-class EmbedRAGTrainer(Trainer):
+class ClaimEmbTrainer(Trainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._parts = defaultdict(list)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         out = model(**inputs)
-        for k in ("ce", "kd"):
-            if k in out:
-                self._parts[k].append(out[k].item())
+        for k in ("distill", "cos", "stop"):
+            self._parts[k].append(out[k].item())
         return (out["loss"], out) if return_outputs else out["loss"]
 
     def log(self, logs, *args, **kwargs):
@@ -64,44 +32,61 @@ class EmbedRAGTrainer(Trainer):
         super().log(logs, *args, **kwargs)
 
     def _save(self, output_dir=None, state_dict=None):
-        self.model.save(output_dir or self.args.output_dir)  # adapters + projector only
+        self.model.save(output_dir or self.args.output_dir)  # LoRA + [CLM] + stop head only
 
 
-def load_data(files, tasks):
-    # plain records: `target` / `meta` vary in type across tasks, which Arrow (HF datasets) can't mix
-    keep = set(tasks.split(",")) if tasks else None
-    rows = [json.loads(l) for f in files.split(",") for l in open(f) if l.strip()]
-    return [r for r in rows if keep is None or r["task"] in keep]
+class ConfigToWandb(TrainerCallback):
+    """HF's wandb callback logs only TrainingArguments; add the model and data settings to the run config."""
+
+    def __init__(self, config):
+        self.config = config
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        import wandb
+        if wandb.run is not None:
+            wandb.config.update(self.config, allow_val_change=True)
+
+
+class MatchWarmup(TrainerCallback):
+    """Train with document-order targets for the first `steps` steps, then switch to `match`."""
+
+    def __init__(self, model, match, steps):
+        self.model, self.match, self.steps = model, match, steps
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        self.model.match = self.match if state.global_step >= self.steps else "order"
+
+
+def load_data(files):
+    return [json.loads(l) for f in files.split(",") for l in open(f) if l.strip()]
 
 
 def main():
     margs, dargs, targs = HfArgumentParser((ModelArgs, DataArgs, TrainArgs)).parse_args_into_dataclasses()
-    cfg_keys = {f.name for f in fields(EmbedRAGConfig)}
-    cfg = {k: getattr(margs, k) for k in cfg_keys}
     dtype = torch.bfloat16 if targs.bf16 else torch.float32
-
-    if margs.init_from:  # keep the saved architecture; only allow adding a decoder adapter
-        model = EmbedRAG.from_pretrained(margs.init_from, dtype, **({"decoder_lora": True} if margs.decoder_lora else {}))
+    if margs.init_from:
+        model = ClaimEmb.from_pretrained(margs.init_from, dtype)
     else:
-        model = EmbedRAG(EmbedRAGConfig(**cfg), dtype)
-    model.set_trainable(margs.train_encoder, margs.train_projector, margs.train_decoder)
-    model.ce_weight, model.kd_weight, model.kd_temperature = targs.ce_weight, targs.kd_weight, targs.kd_temperature
+        model = ClaimEmb(ClaimEmbConfig(**{f.name: getattr(margs, f.name) for f in fields(ClaimEmbConfig)}), dtype)
+    model.distill_weight, model.cos_weight, model.stop_weight = targs.distill_weight, targs.cos_weight, targs.stop_weight
+    model.temperature, model.stop_pos_weight, model.match = targs.temperature, targs.stop_pos_weight, targs.match
 
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"trainable params: {n_train / 1e6:.2f}M")
 
-    collator = EmbedRAGCollator(
-        tokenizer=model.tokenizer, enc_tokenizer=model.enc_tokenizer,
-        chat=ChatFormat(model.tokenizer, dargs.use_chat_template, dargs.system_prompt),
-        num_mem=model.cfg.num_mem, max_passage_len=dargs.max_passage_len,
-        max_target_len=dargs.max_target_len, passage_prefix=dargs.passage_prefix,
-        with_teacher=targs.kd_weight > 0,
+    collator = ClaimCollator(model.tokenizer, model.cfg.max_claims, dargs.max_doc_len, dargs.max_claim_len,
+                             dargs.extra_stop_steps)
+    trainer = ClaimEmbTrainer(
+        model=model,
+        args=targs,
+        data_collator=collator,
+        train_dataset=load_data(dargs.train_files),
+        eval_dataset=load_data(dargs.eval_files) if dargs.eval_files else None,
     )
-    trainer = EmbedRAGTrainer(
-        model=model, args=targs, data_collator=collator,
-        train_dataset=load_data(dargs.train_files, dargs.tasks),
-        eval_dataset=load_data(dargs.eval_files, dargs.tasks) if dargs.eval_files else None,
-    )
+    if targs.match_warmup_steps:
+        trainer.add_callback(MatchWarmup(model, targs.match, targs.match_warmup_steps))
+    if "wandb" in targs.report_to:
+        trainer.add_callback(ConfigToWandb({**asdict(model.cfg), **asdict(dargs)}))
     trainer.train()
     trainer.save_model(targs.output_dir)
 

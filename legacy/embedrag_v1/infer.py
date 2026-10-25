@@ -1,6 +1,6 @@
 """Generate with a trained EmbedRAG checkpoint and score with the RL rewards.
 
-  python -m embedrag.infer --ckpt ckpt/stage2 --input data/embedrag/mds.test.jsonl --output out.jsonl
+  python -m legacy.embedrag_v1.infer --ckpt ckpt/stage2 --input data/embedrag/mds.test.jsonl --output out.jsonl
 """
 import argparse
 import json

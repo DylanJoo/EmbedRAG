@@ -5,47 +5,23 @@ inputs. Reference = frozen copy of the SFT decoder adapter ("decoder_ref"), or t
 the checkpoint had no decoder adapter. Loss per token (on-policy, one update per batch):
     -A * exp(logp - logp.detach()) + beta * KL_k3(ref || policy),   A = group-normalized reward
 
-  python -m embedrag.rl --init_from ckpt/stage2 --train_files data/embedrag/mds.jsonl --tasks summ
+  python -m legacy.embedrag_v1.rl --init_from ckpt/stage2 --train_files data/embedrag/mds.jsonl --tasks summ
 """
 import json
 import os
 import random
-from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
 from transformers import HfArgumentParser
 
 from .backbone import ChatFormat
+from .config import RLArgs
 from .data import EmbedRAGCollator
 from .model import CONFIG_NAME, EmbedRAG, set_adapter
 from .rewards import compute_reward
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-@dataclass
-class RLArgs:
-    init_from: str = None
-    train_files: str = None
-    output_dir: str = "./temp-rl"
-    tasks: Optional[str] = None
-    steps: int = 500
-    prompts_per_step: int = 4
-    group_size: int = 8
-    micro_batch: int = 4
-    lr: float = 5e-6
-    beta: float = 0.02
-    max_new_tokens: int = 256
-    temperature: float = 1.0
-    top_p: float = 1.0
-    max_passage_len: int = 256
-    reward_weights: str = field(default="label=1,cite=1,f1=0.5,len=0.2")
-    use_chat_template: bool = True
-    save_steps: int = 100
-    log_steps: int = 5
-    seed: int = 42
 
 
 def completion_mask(ids, eos_ids):

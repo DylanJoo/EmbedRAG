@@ -2,3 +2,5 @@
 data/*jsonl
 *swp
 *out
+data/claimemb/
+data/rag25/

@@ -21,19 +21,19 @@ COMMON="--bf16 --gradient_checkpointing --per_device_train_batch_size 4 --gradie
 
 case $1 in
 data)
-    python -m embedrag.build_data pretrain --input ${CORPUS:-data/corpus.jsonl} --output data/embedrag/pretrain.jsonl
-    python -m embedrag.build_data mds --input data/mds-5k-greedy-1.jsonl --output data/embedrag/mds.jsonl ;;
+    python -m legacy.embedrag_v1.build_data pretrain --input ${CORPUS:-data/corpus.jsonl} --output data/embedrag/pretrain.jsonl
+    python -m legacy.embedrag_v1.build_data mds --input data/mds-5k-greedy-1.jsonl --output data/embedrag/mds.jsonl ;;
 align)  # stage 1: encoder LoRA + projector, frozen decoder
-    accelerate launch --config_file configs/default_train.yaml -m embedrag.train $COMMON \
+    accelerate launch --config_file configs/default_train.yaml -m legacy.embedrag_v1.train $COMMON \
         --decoder $DEC --num_mem 8 --pooling memory \
         --train_files data/embedrag/pretrain.jsonl \
         --learning_rate 1e-4 --max_steps 20000 --run_name ${NAME}-align --output_dir ${OUT}/align ;;
 task)   # stage 2: + decoder LoRA, CE + distillation from full-text teacher
-    accelerate launch --config_file configs/default_train.yaml -m embedrag.train $COMMON \
+    accelerate launch --config_file configs/default_train.yaml -m legacy.embedrag_v1.train $COMMON \
         --init_from ${OUT}/align --decoder_lora --train_decoder --kd_weight 1.0 \
         --train_files data/embedrag/mds.jsonl,data/embedrag/pretrain.jsonl --tasks summ,rel,single,ae_multi \
         --learning_rate 5e-5 --max_steps 10000 --run_name ${NAME}-task --output_dir ${OUT}/task ;;
 rl)     # stage 3: GRPO on decoder LoRA
-    python -m embedrag.rl --init_from ${OUT}/task --train_files data/embedrag/mds.jsonl --tasks summ \
+    python -m legacy.embedrag_v1.rl --init_from ${OUT}/task --train_files data/embedrag/mds.jsonl --tasks summ \
         --output_dir ${OUT}/rl ;;
 esac
