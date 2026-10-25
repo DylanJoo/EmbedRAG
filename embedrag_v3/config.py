@@ -33,8 +33,6 @@ class ClaimEmbConfig:
     max_claims: int = field(default=32, metadata={"help": "max claim steps per document"})
     step_stride: int = field(default=24, metadata={"help": "position gap between [CLM] steps (step t at "
                                                            "prompt_len + stride * t)"})
-    step_weights: str = field(default="lora", metadata={"help": "weights the [CLM] steps run with: lora (adapter on "
-                                                                "the frozen student) | full (a trainable full copy)"})
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05

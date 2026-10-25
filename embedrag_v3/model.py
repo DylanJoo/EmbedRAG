@@ -11,15 +11,13 @@ decoder's own abilities (reading, copying, following the instruction in `doc_tem
 into the teacher's space: `proj` is a linear layer initialized to identity (both models share Qwen3's
 architecture and tokenizer). The LoRA is active only on the [CLM] steps, so the document's states are the
 frozen student's and training never backpropagates through document tokens. Each step attends to the prompt
-and to all earlier steps; steps sit `step_stride` positions apart. With `step_weights="full"` the steps run
-through a trainable full copy of the student instead.
+and to all earlier steps; steps sit `step_stride` positions apart.
 
 The teacher (frozen Qwen3-Embedding) embeds each gold claim's text. Steps are matched to gold claims in
 document order, or one-to-one by Hungarian matching (`match`), and trained by score distillation: each step's
 scores over the batch's claims should match the scores its gold claim vector gives them (see `distill_loss`).
 """
 import contextlib
-import copy
 import json
 import os
 from dataclasses import asdict, fields
@@ -86,18 +84,12 @@ class ClaimEmb(nn.Module):
         self.stop_pos_weight = 1.0
         self.match = "order"  # or "hungarian"
 
-        # Define step weights: a lora on the frozen student (active on [CLM] steps only; see `lora`), or a full
-        # trainable copy of the student; either way the prompt goes through the frozen original
-        if cfg.step_weights == "full":
-            # fp32 master weights: small full-model updates would round away in bf16
-            self.step_student = copy.deepcopy(self.student).float().requires_grad_(True)
-        else:
-            lora = LoraConfig(r=cfg.lora_r, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout,
-                              target_modules=LORA_MODULES, bias="none")
-            inject_adapter_in_model(lora, self.student, adapter_name="claim")
-            for n, p in self.student.named_parameters():
-                p.requires_grad_("lora_" in n)
-            self.step_student = None
+        # Define lora (active on [CLM] steps only; see `lora`); the prompt goes through the frozen student
+        lora = LoraConfig(r=cfg.lora_r, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout,
+                          target_modules=LORA_MODULES, bias="none")
+        inject_adapter_in_model(lora, self.student, adapter_name="claim")
+        for n, p in self.student.named_parameters():
+            p.requires_grad_("lora_" in n)
         self._tuners = [m for m in self.student.modules() if isinstance(m, BaseTunerLayer)]
 
         # Define step input, init from a token embedding; and the map into the teacher's space (identity init)
@@ -114,9 +106,6 @@ class ClaimEmb(nn.Module):
     # ---------------------------------------------------------------- setup
     @contextlib.contextmanager
     def lora(self, on):
-        if not self._tuners:  # step_weights="full": no adapter to switch
-            yield
-            return
         prev = self._tuners[0]._disable_adapters
         for m in self._tuners:
             m._disable_adapters = not on
@@ -155,14 +144,9 @@ class ClaimEmb(nn.Module):
             prompt_mask = doc_attention_mask.clone()
             prompt_mask[:, -1] = 0
         mask = torch.cat([prompt_mask, step_mask.long()], 1)
-        net, full = self.student, self.step_student is not None
-        if full:  # the fp32 step copy runs in fp32 (no autocast) on an fp32 copy of the prompt cache
-            net = self.step_student
-            for layer in cache.layers:
-                layer.keys, layer.values = layer.keys.float(), layer.values.float()
-        with self.lora(True), torch.autocast(x.device.type, enabled=not full and torch.is_autocast_enabled(x.device.type)):
-            h = net(
-                inputs_embeds=x.to(net.dtype),
+        with self.lora(True):
+            h = self.student(
+                inputs_embeds=x.to(self.student.dtype),
                 attention_mask=mask,
                 position_ids=pos,
                 past_key_values=cache,
@@ -216,9 +200,8 @@ class ClaimEmb(nn.Module):
 
     # ---------------------------------------------------------------- io
     def trainable_state_dict(self):
-        keep = lambda k: "lora_" in k or k.startswith(("step_student", "step_query", "proj", "stop_head"))
-        cast = lambda k, v: v.to(self.student.dtype) if k.startswith("step_student") else v  # fp32 only to train
-        return {k: cast(k, v).detach().contiguous().cpu() for k, v in self.state_dict().items() if keep(k)}
+        keep = lambda k: "lora_" in k or k.startswith(("step_query", "proj", "stop_head"))
+        return {k: v.detach().contiguous().cpu() for k, v in self.state_dict().items() if keep(k)}
 
     def save(self, out_dir):
         os.makedirs(out_dir, exist_ok=True)

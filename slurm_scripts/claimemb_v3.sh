@@ -16,7 +16,7 @@
 #   keeps the doc input identical to the embedding model's ({doc}<|endoftext|>) and only adds the generation cue
 # HIDE_DOC_END=1: steps can't attend to the prompt's last token (with TEMPLATE=doc: the doc vector's <|endoftext|>)
 # SCHED: lr schedule (default constant_with_warmup; e.g. cosine)
-# NAME: run name; STEP_WEIGHTS: lora | full (use a small LR, e.g. 2e-5); LORA_R (alpha = 2 * rank)
+# NAME: run name; LORA_R (alpha = 2 * rank)
 # STRIDE (default 24), EXTRA_STOP / STOP_PW (2 / 3), MATCH / MATCH_WARMUP (hungarian / 100), DISTILL / COS (1 / 1)
 
 ROOT=/pfs/lustrep1/scratch/project_465002532/personal/dylan
@@ -44,7 +44,7 @@ small)
         --distill_weight ${DISTILL:-1} --cos_weight ${COS:-1} \
         --extra_stop_steps ${EXTRA_STOP:-2} --stop_pos_weight ${STOP_PW:-3} \
         --match ${MATCH:-hungarian} --match_warmup_steps ${MATCH_WARMUP:-100} --step_stride ${STRIDE:-24} \
-        ${TEMPLATE:+--doc_template $TEMPLATE} ${HIDE_DOC_END:+--hide_doc_end} --step_weights ${STEP_WEIGHTS:-lora} --lora_r ${LORA_R:-16} --lora_alpha $((2 * ${LORA_R:-16})) \
+        ${TEMPLATE:+--doc_template $TEMPLATE} ${HIDE_DOC_END:+--hide_doc_end} --lora_r ${LORA_R:-16} --lora_alpha $((2 * ${LORA_R:-16})) \
         --seed ${SEED:-42} --report_to wandb --run_name v3-$DATA_NAME-$NAME \
         --train_files $DATA.train.jsonl --bf16 --per_device_train_batch_size ${BSZ:-16} --learning_rate $LR \
         --lr_scheduler_type ${SCHED:-constant_with_warmup} --warmup_steps 20 --max_steps $STEPS --logging_steps 20 \

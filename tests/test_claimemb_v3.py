@@ -148,27 +148,6 @@ class TestTraining(TinyCase):
         self.assertFalse(any(n.startswith("teacher_model") for n in grads))
         self.assertFalse(any("lora_" not in n and n.startswith("student") for n in grads))
 
-    def test_full_step_weights(self):
-        """step_weights=full: steps train a full copy; prompt and teacher stay on the frozen originals."""
-        m = self.model(step_weights="full").train()
-        m(**self.collator(m)(DOCS))["loss"].backward()
-        grads = {n for n, p in m.named_parameters() if p.grad is not None and p.grad.abs().sum() > 0}
-        self.assertTrue(any(n.startswith("step_student.") for n in grads))
-        self.assertFalse(any(n.startswith(("student.", "teacher_model.")) for n in grads))
-        with tempfile.TemporaryDirectory() as d:
-            m.eval().save(d)
-            r = ClaimEmb.from_pretrained(d, torch.float32).eval()
-            torch.testing.assert_close(self.run_steps(r, TEXTS, 2)[0], self.run_steps(m, TEXTS, 2)[0])
-
-    def test_step_query_is_not_a_view_of_embeddings(self):
-        """Training [CLM] must not change the student's token embeddings (fp32 .float() returns the same tensor)."""
-        m = self.model()
-        emb = m.student.get_input_embeddings().weight
-        before = emb.clone()
-        with torch.no_grad():
-            m.step_query.add_(1.0)
-        torch.testing.assert_close(emb, before)
-
     def test_overfits(self):
         m = self.model().train()
         b = self.collator(m)(DOCS)

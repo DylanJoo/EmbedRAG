@@ -203,21 +203,6 @@ class TestTraining(TinyCase):
         self.assertTrue(any("lora_B" in n for n in grads))
         self.assertFalse(any("lora_" not in n and n.startswith("backbone") for n in grads))
 
-    def test_full_step_weights(self):
-        """step_weights=full: steps train a full copy; docs and teacher stay on the frozen original."""
-        m = self.model(step_weights="full").train()
-        self.assertEqual(m._tuners, [])
-        b = ClaimCollator(m.tokenizer, max_claims=4)(DOCS)
-        m(**b)["loss"].backward()
-        grads = {n for n, p in m.named_parameters() if p.grad is not None and p.grad.abs().sum() > 0}
-        self.assertTrue(any(n.startswith("step_backbone.") for n in grads))
-        self.assertFalse(any(n.startswith("backbone.") for n in grads))
-        torch.testing.assert_close(self.run_steps(m.eval(), TEXTS, 1)[0], self.run_steps(self.model(), TEXTS, 1)[0])
-        with tempfile.TemporaryDirectory() as d:
-            m.save(d)
-            r = ClaimEmb.from_pretrained(d, torch.float32).eval()
-            torch.testing.assert_close(self.run_steps(r, TEXTS, 2)[1], self.run_steps(m, TEXTS, 2)[1])
-
     def test_overfits(self):
         """A few steps on two docs should pull each step toward its own claim and learn to stop."""
         m = self.model().train()

@@ -16,12 +16,10 @@ QWEN3_EMB = "Qwen/Qwen3-Embedding-0.6B"
 class ClaimEmbConfig:
     backbone: str = field(default=QWEN3_EMB, metadata={"help": "embedding LM (last-token pooling); also the teacher"})
     max_claims: int = field(default=32, metadata={"help": "max claim steps per document"})
-    step_stride: int = field(default=1, metadata={"help": "position gap between [CLM] steps (step t at doc_len + "
+    step_stride: int = field(default=24, metadata={"help": "position gap between [CLM] steps (step t at doc_len + "
                                                           "stride * t), e.g. ~ mean claim length in tokens"})
     soft_prompt: str = field(default="", metadata={"help": "text whose token embeddings init learned prompt "
                                                            "vectors between the doc and the steps ('' = none)"})
-    step_weights: str = field(default="lora", metadata={"help": "weights the [CLM] steps run with: lora (adapter on "
-                                                                "the frozen backbone) | full (a trainable full copy)"})
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05

@@ -60,16 +60,15 @@ small)  # quick runs on ~3k docs, fits dev-g; defaults = the current best recipe
         # CFGS entries: name,distill_weight,cos_weight      e.g. CFGS="cos,0,1 distill,1,0 both,1,1"
         # EXTRA_STOP / STOP_PW: extra stop-labeled steps / stop class weight (defaults 2 / 3)
         # MATCH / MATCH_WARMUP: order | hungarian / document-order steps first (defaults hungarian / 100)
-        # STRIDE: position gap between [CLM] steps (default 1); PROMPT: soft-prompt init text (default none)
+        # STRIDE: position gap between [CLM] steps (default 24); PROMPT: soft-prompt init text (default none)
         # BSZ: per-device batch size (default 16)
-        # STEP_WEIGHTS: lora | full (trainable full copy for the steps; use a small LR, e.g. 2e-5)
         # LORA_R: lora rank (default 16; alpha = 2 * rank)
         # bigger subset: NDOCS=30000 DATA_NAME=n30k EVAL_DOCS=300 STEPS=1500 sbatch -p dev-g -t 01:00:00 ...
     NDOCS=${NDOCS:-3000}; DATA_NAME=${DATA_NAME:-small}; EVAL_DOCS=${EVAL_DOCS:-100}
     SMALL=data/claimemb/$DATA_NAME
     BASE=${ROOT}/scratch/claimemb-$DATA_NAME/baseline.json
     SOUT=${ROOT}/scratch/claimemb-$DATA_NAME${TAG:+-$TAG}
-    LR=${LR:-1e-3}; SCHED=${SCHED:-constant_with_warmup}; STEPS=${STEPS:-400}; CFGS=${CFGS:-"both,1,1"}
+    LR=${LR:-1e-3}; SCHED=${SCHED:-cosine}; STEPS=${STEPS:-400}; CFGS=${CFGS:-"both,1,1"}
     [ -f $SMALL.dev.jsonl ] || run python -m embedrag.build_data \
         --input ~/scratch/ragtime2/eng-docs.processed-claims.jsonl.gz \
         --output $SMALL --tokenizer $BACKBONE --num_docs $NDOCS --dev_frac 0.05
@@ -82,8 +81,8 @@ small)  # quick runs on ~3k docs, fits dev-g; defaults = the current best recipe
         export WANDB_RUN_ID=$DATA_NAME-lr$LR-$1-${SLURM_JOB_ID} WANDB_RUN_GROUP=${TAG:-$DATA_NAME}
         run python -m embedrag.train --backbone $BACKBONE --distill_weight $2 --cos_weight $3 \
             --extra_stop_steps ${EXTRA_STOP:-2} --stop_pos_weight ${STOP_PW:-3} \
-            --match ${MATCH:-hungarian} --match_warmup_steps ${MATCH_WARMUP:-100} --step_stride ${STRIDE:-1} --soft_prompt "'${PROMPT:-}'" \
-            --step_weights ${STEP_WEIGHTS:-lora} --lora_r ${LORA_R:-16} --lora_alpha $((2 * ${LORA_R:-16})) \
+            --match ${MATCH:-hungarian} --match_warmup_steps ${MATCH_WARMUP:-100} --step_stride ${STRIDE:-24} --soft_prompt "'${PROMPT:-}'" \
+            --lora_r ${LORA_R:-16} --lora_alpha $((2 * ${LORA_R:-16})) \
             --seed ${SEED:-42} \
             --report_to wandb --run_name $DATA_NAME-lr$LR-$1 \
             --train_files $SMALL.train.jsonl --bf16 --per_device_train_batch_size ${BSZ:-16} --learning_rate $LR \

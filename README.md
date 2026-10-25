@@ -2,6 +2,17 @@
 
 ## Structure
 ```
+claimemb/            # MAIN ClaimEmb: grid end-token queries + back-track residual (Qwen3-Embedding + LoRA)
+  model.py           #   ClaimEmb: doc read frozen (exact doc vector), <|endoftext|> + b(distance) queries on a
+                     #   stride grid, has-claim head; Hungarian-matched training, score distillation + cos
+  data.py            #   collator: {id, text, claims} -> doc input + teacher claim inputs
+  train.py           #   HF Trainer (proportional -> Hungarian matching warm start)
+  evaluate.py        #   claim-vector fidelity: kept / all queries, doc-vector baseline
+embedrag_v4/         # v4 experiments: end-token queries with regions (mask / residual / grid), CRF locator,
+                     #   claim-span alignment (align.py), grid attention analysis (analyze_attention.py)
+embedrag_v3/         # v3 experiments: separate student/teacher (Qwen3-0.6B or Qwen3-Embedding), doc templates,
+                     #   training-free baselines (reference_chunks.py), decoder attention (analyze_decoder.py),
+                     #   rag25 builder (build_rag25.py)
 embedrag/            # v2 ClaimEmb: a document's claim embeddings, one step at a time (Qwen3-Embedding + LoRA)
   model.py           #   ClaimEmb: [CLM] steps, stop head, teacher = backbone with LoRA off, score distillation + cos + stop
   data.py            #   collator: doc + claim-step slots; gold claims -> teacher inputs
@@ -22,5 +33,8 @@ models/              # OLD (reference): fidt5.py (FiD-T5), modeling_llama.py (CE
 data/                # OLD: compose_pairs.py (mds pairs), collator.py (FiD collators)
 llm/ prompts/ tools/ # OLD: NeuCLIR RAG pipeline (vLLM, PLAID-X search, post-citation, eval)
 train.py, standard.py, multidoc_summarize.py, legacy/summarize.py   # OLD entry points
-slurm_scripts/       # claimemb.sh {data|train|eval} (LUMI) runs v2; embedrag.sh runs v1; others are OLD
+slurm_scripts/       # claimemb_grid.sh runs the main package; claimemb.sh v2, claimemb_v3.sh v3, claimemb_v4.sh v4;
+                     #   embedrag.sh runs v1; others are OLD
+tests/               # unit tests on tiny random Qwen3 models: test_claimemb_grid.py (main), test_claimemb.py (v2),
+                     #   test_claimemb_v3.py, test_claimemb_v4.py
 ```

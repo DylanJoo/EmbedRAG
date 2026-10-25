@@ -9,7 +9,6 @@ The LoRA is active only on the [CLM] steps, so the document's states are the fro
 equals the precomputed index vector exactly, and training never backpropagates through document tokens.
 Each step attends to the document and to all earlier steps. [CLM] is one learned vector shared by all steps,
 initialized from <|endoftext|>, the token the backbone already pools at. Steps sit `step_stride` positions apart.
-With `step_weights="full"` the steps instead run through a trainable full copy of the backbone.
 An optional soft prompt (learned vectors, init from the tokens of `soft_prompt`) goes between the doc and the steps.
 
 The teacher is the frozen backbone embedding each gold claim's text. Steps are matched to gold claims in
@@ -17,7 +16,6 @@ document order, or one-to-one by Hungarian matching (`match`), and trained by sc
 scores over the batch's claims should match the scores its gold claim vector gives them (see `distill_loss`).
 """
 import contextlib
-import copy
 import json
 import os
 from dataclasses import asdict, fields
@@ -83,18 +81,12 @@ class ClaimEmb(nn.Module):
         self.stop_pos_weight = 1.0
         self.match = "order"  # or "hungarian"
 
-        # Define step weights: a lora on the frozen backbone (active on [CLM] steps only; see `lora`), or a full
-        # trainable copy of the backbone; either way documents and teacher go through the frozen original
-        if cfg.step_weights == "full":
-            # fp32 master weights: small full-model updates would round away in bf16
-            self.step_backbone = copy.deepcopy(self.backbone).float().requires_grad_(True)
-        else:
-            lora = LoraConfig(r=cfg.lora_r, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout,
-                              target_modules=LORA_MODULES, bias="none")
-            inject_adapter_in_model(lora, self.backbone, adapter_name="claim")
-            for n, p in self.backbone.named_parameters():
-                p.requires_grad_("lora_" in n)
-            self.step_backbone = None
+        # Define lora (applied to [CLM] steps only; see `lora`)
+        lora = LoraConfig(r=cfg.lora_r, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout,
+                          target_modules=LORA_MODULES, bias="none")
+        inject_adapter_in_model(lora, self.backbone, adapter_name="claim")
+        for n, p in self.backbone.named_parameters():
+            p.requires_grad_("lora_" in n)
         self._tuners = [m for m in self.backbone.modules() if isinstance(m, BaseTunerLayer)]
 
         # Define step input: init [CLM] as the end token the backbone already pools at
@@ -110,9 +102,6 @@ class ClaimEmb(nn.Module):
     # ---------------------------------------------------------------- setup
     @contextlib.contextmanager
     def lora(self, on):
-        if not self._tuners:  # step_weights="full": no adapter to switch
-            yield
-            return
         prev = self._tuners[0]._disable_adapters
         for m in self._tuners:
             m._disable_adapters = not on
@@ -154,14 +143,9 @@ class ClaimEmb(nn.Module):
         pos = torch.cat([n + torch.arange(P, device=x.device),
                          n + P + self.cfg.step_stride * torch.arange(T, device=x.device)], 1)
         mask = torch.cat([doc_attention_mask, step_mask.new_ones(B, P).long(), step_mask.long()], 1)
-        net, full = self.backbone, self.step_backbone is not None
-        if full:  # the fp32 step copy runs in fp32 (no autocast) on an fp32 copy of the doc cache
-            net = self.step_backbone
-            for layer in cache.layers:
-                layer.keys, layer.values = layer.keys.float(), layer.values.float()
-        with self.lora(True), torch.autocast(x.device.type, enabled=not full and torch.is_autocast_enabled(x.device.type)):
-            h = net(
-                inputs_embeds=x.to(net.dtype),
+        with self.lora(True):
+            h = self.backbone(
+                inputs_embeds=x.to(self.backbone.dtype),
                 attention_mask=mask,
                 position_ids=pos,
                 past_key_values=cache,
@@ -215,9 +199,8 @@ class ClaimEmb(nn.Module):
 
     # ---------------------------------------------------------------- io
     def trainable_state_dict(self):
-        keep = lambda k: "lora_" in k or k.startswith(("step_backbone", "step_query", "stop_head", "soft_prompt"))
-        cast = lambda k, v: v.to(self.backbone.dtype) if k.startswith("step_backbone") else v  # fp32 only to train
-        return {k: cast(k, v).detach().contiguous().cpu() for k, v in self.state_dict().items() if keep(k)}
+        keep = lambda k: "lora_" in k or k.startswith(("step_query", "stop_head", "soft_prompt"))
+        return {k: v.detach().contiguous().cpu() for k, v in self.state_dict().items() if keep(k)}
 
     def save(self, out_dir):
         os.makedirs(out_dir, exist_ok=True)

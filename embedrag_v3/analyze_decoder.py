@@ -149,8 +149,7 @@ def analyze_doc(model, b, init_model=None):
         p = torch.tensor([b["prompt"]], device=dev)
         mask = torch.ones_like(p)
         cache = m.read_doc(p, mask)
-        net = m.student if m.step_student is None else m.step_student
-        box, restore = capture(net)
+        box, restore = capture(m.student)
         try:
             e, _ = m.steps(cache, mask, torch.ones(1, n, dtype=torch.bool, device=dev))
         finally:
@@ -191,13 +190,10 @@ def main():
     model = ClaimEmb.from_pretrained(args.ckpt).to(dev).eval() if args.ckpt else None
     # untrained model on the same (local) student/teacher: hub ids fail offline in transformers 4.57
     cfg = ClaimEmbConfig(**{k: v for k, v in vars(model.cfg).items()}) if model else ClaimEmbConfig(args.student, args.teacher)
-    cfg.step_weights = "lora"
     init = ClaimEmb(cfg).to(dev).eval()
     model = model or init
     for m in {id(init): init, id(model): model}.values():
         m.student.config._attn_implementation = "eager"  # sdpa returns no attention weights
-        if m.step_student is not None:
-            m.step_student.config._attn_implementation = "eager"
 
     with open(args.eval_file) as f:
         docs = [json.loads(l) for _, l in zip(range(args.num_docs), f)]
